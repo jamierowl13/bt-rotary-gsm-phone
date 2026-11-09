@@ -93,6 +93,30 @@ Wire the handset cord **straight to the SIM900**. Bypass the phone's original ne
 - **Transmitter (mic):** the original **carbon** microphone won't work well, because it needs a DC bias current the SIM900 doesn't supply. Replace it with an **electret capsule**, either fitted inside the old transmitter cup or as a ready-made "electret transmitter inset" replacement. The SIM900's MIC1 input powers an electret directly. Watch the polarity: the capsule's ground leg goes to MIC1N. Set the gain with `MIC_GAIN`.
 - If the person you're talking to hears an echo, lower `MIC_GAIN`/`SPEAKER_VOLUME`, or look up `AT+ECHO` in the SIM900 AT manual.
 
+## Testing from the Serial Monitor
+
+Open **Tools → Serial Monitor**, set it to **115200 baud** and **Newline**, and type `help`. You can test each part of the phone on its own before it's all assembled:
+
+| Command | What it tests |
+|---|---|
+| `status` | Phone state, handset, SIM900, signal, WiFi address and pin levels |
+| `watch on` | Prints every change on the hook / dial pins. Lift the handset and turn the dial to check the wiring |
+| `bell` / `bell on` / `bell off` | Rings the bell (6 s burst, or continuously) so you can adjust it |
+| `lift` / `hangup` / `hook real` | Pretends the handset is lifted or put down, without the hook switch wired |
+| `digit 7` | Pretends a digit was dialled |
+| `ring` | Fake incoming call: rings the bell, `lift` or `end` stops it |
+| `call 07700900123` / `answer` / `end` | Real calls through the SIM900 |
+| `dtmf 123#` | Sends tones during a call |
+| `AT+CSQ` (anything starting `AT`) | Sent straight to the SIM900 so you can try AT commands |
+| `signal` | Signal strength, registration and network name |
+| `tone dial` / `busy` / `nu` / `off` | Plays a tone in the earpiece |
+| `vol 80` / `mic 10` | Adjusts earpiece volume and mic gain live |
+| `sim off` / `sim on` | Hides or shows the modem traffic |
+| `simreset` | Power-cycles and re-initialises the SIM900 |
+| `log` / `reboot` | Recent calls / restart |
+
+When the dial is wired correctly, dialling a 5 prints `[DIAL] 5`.
+
 ## How calls behave
 
 | You do | Result |

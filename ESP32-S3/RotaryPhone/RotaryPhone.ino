@@ -58,6 +58,11 @@ volatile uint32_t bellTestUntil = 0;
 // digits from the dial task
 QueueHandle_t digitQueue;
 
+// serial test console
+int  hookOverride = -1;             // -1 = real hook switch, 0 = forced on hook, 1 = forced off hook
+bool pinWatch = false;              // print hook / dial pin changes
+bool simEcho = true;                // print modem traffic
+
 // call log
 struct LogEntry { char dir; String number; uint32_t at; };   // dir: 'i' in, 'o' out, 'm' missed
 std::deque<LogEntry> callLog;
@@ -81,7 +86,7 @@ void handleSimLine(const String& line);
 void onCallEnded(const char* why);
 
 void simSend(const String& cmd, uint8_t tag = CMD_GENERIC) {
-  Serial.printf("[SIM>] %s\n", cmd.c_str());
+  if (simEcho) Serial.printf("[SIM>] %s\n", cmd.c_str());
   SIM.print(cmd);
   SIM.print("\r");
   pendingCmds.push_back(tag);
@@ -261,7 +266,7 @@ void placeCall(const String& number) {
 void answerCall() {
   if (state != ST_INCOMING) return;
   bellRinging = false;
-  simSend("ATA", CMD_ANSWER);
+  if (callerId != "TEST") simSend("ATA", CMD_ANSWER);   // "TEST" = fake call from the serial console
   answeredIncoming = true;
   addLog('i', callerId);
   callStartMs = millis();
@@ -362,7 +367,7 @@ void onReplaceHandset() {
 void pollHook() {
   static bool lastRaw = offHook;
   static uint32_t changedAt = 0;
-  bool raw = digitalRead(PIN_HOOK) == HOOK_OFF_LEVEL;
+  bool raw = hookOverride >= 0 ? hookOverride == 1 : digitalRead(PIN_HOOK) == HOOK_OFF_LEVEL;
   if (raw != lastRaw) { lastRaw = raw; changedAt = millis(); }
   if (raw != offHook && millis() - changedAt >= HOOK_DEBOUNCE_MS) {
     offHook = raw;
@@ -374,7 +379,7 @@ void pollHook() {
 //  Parse everything the modem says
 // ---------------------------------------------------------------------
 void handleSimLine(const String& line) {
-  Serial.printf("[SIM<] %s\n", line.c_str());
+  if (simEcho) Serial.printf("[SIM<] %s\n", line.c_str());
 
   if (line == "OK") { finalResult(true); return; }
   if (line == "ERROR" || line.startsWith("+CME ERROR") || line.startsWith("+CMS ERROR")) {
@@ -608,6 +613,161 @@ void setupWiFi() {
 }
 
 // ---------------------------------------------------------------------
+//  Serial test console (Serial Monitor at 115200, line ending "Newline")
+// ---------------------------------------------------------------------
+void printHelp() {
+  Serial.println(F(
+    "\n--------------- RotaryPhone test console ---------------\n"
+    " help              this list\n"
+    " status            phone state, hook, modem, WiFi\n"
+    " pins              show hook / dial pin levels now\n"
+    " watch on|off      print every hook / dial pin change (wiring test)\n"
+    "\n BELL\n"
+    " bell              ring the UK cadence for 6 s\n"
+    " bell on|off       ring continuously / stop\n"
+    "\n HANDSET / DIAL (simulated)\n"
+    " lift              pretend the handset is lifted\n"
+    " hangup            pretend the handset is put down\n"
+    " hook real         go back to the real hook switch\n"
+    " digit 0-9         pretend a digit was dialled\n"
+    " ring              pretend an incoming call (rings the bell)\n"
+    "\n CALLS (real, through the SIM900)\n"
+    " call <number>     dial a number\n"
+    " answer            answer an incoming call\n"
+    " end               hang up the call\n"
+    " dtmf <digits>     send DTMF tones during a call\n"
+    "\n MODEM\n"
+    " AT...             anything starting with AT goes straight to the SIM900\n"
+    " signal            signal strength + network\n"
+    " tone dial|busy|nu|off   play a tone in the earpiece\n"
+    " vol <0-100>       earpiece volume     mic <0-15>  mic gain\n"
+    " sim on|off        show / hide modem traffic\n"
+    " simreset          power-cycle the SIM900 and set it up again\n"
+    "\n log               recent calls\n"
+    " reboot            restart the ESP32\n"
+    "--------------------------------------------------------"));
+}
+
+void printPins() {
+  Serial.printf("[PINS] hook GPIO%d=%d (%s)  pulse GPIO%d=%d (%s)",
+                PIN_HOOK, digitalRead(PIN_HOOK),
+                digitalRead(PIN_HOOK) == HOOK_OFF_LEVEL ? "OFF hook" : "on hook",
+                PIN_DIAL_PULSE, digitalRead(PIN_DIAL_PULSE),
+                digitalRead(PIN_DIAL_PULSE) == DIAL_PULSE_BREAK_LEVEL ? "open" : "closed");
+  if (PIN_DIAL_OFFNORMAL >= 0)
+    Serial.printf("  off-normal GPIO%d=%d (%s)", PIN_DIAL_OFFNORMAL, digitalRead(PIN_DIAL_OFFNORMAL),
+                  digitalRead(PIN_DIAL_OFFNORMAL) == DIAL_OFFNORMAL_ACTIVE ? "dial moving" : "at rest");
+  Serial.println();
+}
+
+void printStatus() {
+  Serial.println(F("------------------ STATUS ------------------"));
+  Serial.printf(" Phone state : %s\n", STATE_NAMES[state]);
+  Serial.printf(" Handset     : %s%s\n", offHook ? "OFF hook (lifted)" : "on hook",
+                hookOverride >= 0 ? "  [SIMULATED - type 'hook real']" : "");
+  Serial.printf(" Dialled     : %s\n", dialBuf.length() ? dialBuf.c_str() : "-");
+  Serial.printf(" Call number : %s   Caller ID: %s\n", activeNumber.length() ? activeNumber.c_str() : "-",
+                callerId.length() ? callerId.c_str() : "-");
+  Serial.printf(" Bell        : %s\n", bellShouldRing() ? "RINGING" : "quiet");
+  Serial.printf(" SIM900      : %s, %s, operator '%s', CSQ %d (%s)\n",
+                simAlive ? "responding" : "NOT responding", simStatus.c_str(), operatorName.c_str(), csq,
+                csq == 99 ? "unknown" : csq >= 15 ? "good" : csq >= 10 ? "ok" : "weak");
+  if (WiFi.getMode() == WIFI_AP)
+    Serial.printf(" WiFi        : access point '%s'  http://%s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+  else
+    Serial.printf(" WiFi        : %s  http://%s  (http://%s.local)\n",
+                  WiFi.status() == WL_CONNECTED ? "connected" : "DISCONNECTED",
+                  WiFi.localIP().toString().c_str(), HOSTNAME);
+  Serial.printf(" Free heap   : %u bytes   Uptime: %lu s\n", (unsigned)ESP.getFreeHeap(), (unsigned long)(millis() / 1000));
+  printPins();
+  Serial.println(F("--------------------------------------------"));
+}
+
+void watchPins() {
+  if (!pinWatch) return;
+  static int lh = -1, lp = -1, lo = -1;
+  int h = digitalRead(PIN_HOOK), p = digitalRead(PIN_DIAL_PULSE);
+  int o = PIN_DIAL_OFFNORMAL >= 0 ? digitalRead(PIN_DIAL_OFFNORMAL) : -1;
+  if (h != lh || p != lp || o != lo) {
+    Serial.printf("[WATCH] %6lu ms  hook=%d  pulse=%d  offnormal=%d\n", millis(), h, p, o);
+    lh = h; lp = p; lo = o;
+  }
+}
+
+void handleConsole(String line) {
+  line.trim();
+  if (!line.length()) return;
+  String cmd = line, arg;
+  int sp = line.indexOf(' ');
+  if (sp > 0) { cmd = line.substring(0, sp); arg = line.substring(sp + 1); arg.trim(); }
+  String lc = cmd; lc.toLowerCase();
+  String la = arg; la.toLowerCase();
+
+  if (lc.startsWith("at")) { simSend(line); return; }       // raw AT passthrough
+
+  if (lc == "help" || lc == "?") printHelp();
+  else if (lc == "status") printStatus();
+  else if (lc == "pins") printPins();
+  else if (lc == "watch") { pinWatch = la != "off"; Serial.printf("[TEST] pin watch %s\n", pinWatch ? "ON - lift handset / turn dial" : "off"); }
+
+  else if (lc == "bell") {
+    if (la == "on") { bellTestUntil = millis() + 3600000UL; Serial.println("[TEST] bell ringing - 'bell off' to stop"); }
+    else if (la == "off") { bellTestUntil = millis(); bellRinging = false; Serial.println("[TEST] bell off"); }
+    else { bellTestUntil = millis() + 6000; Serial.println("[TEST] bell: UK ring for 6 s"); }
+  }
+
+  else if (lc == "lift")   { hookOverride = 1; Serial.println("[TEST] handset LIFTED (simulated)"); }
+  else if (lc == "hangup") { hookOverride = 0; Serial.println("[TEST] handset DOWN (simulated)"); }
+  else if (lc == "hook" && la == "real") { hookOverride = -1; Serial.println("[TEST] using real hook switch"); }
+  else if (lc == "digit" && arg.length() == 1 && isDigit(arg[0])) { int d = arg[0] - '0'; xQueueSend(digitQueue, &d, 0); }
+  else if (lc == "ring") {
+    if (state != ST_IDLE) Serial.println("[TEST] phone must be idle (on hook) to ring");
+    else { onIncoming("TEST"); Serial.println("[TEST] fake incoming call - 'lift' or 'end' to stop"); }
+  }
+
+  else if (lc == "call" && arg.length()) {
+    if (isCallActive()) Serial.println("[TEST] already in a call");
+    else { if (state == ST_OFFHOOK) stopTone(); placeCall(arg); }
+  }
+  else if (lc == "answer") { if (state == ST_INCOMING) answerCall(); else Serial.println("[TEST] no incoming call"); }
+  else if (lc == "end") {
+    if (state == ST_INCOMING && callerId == "TEST") { bellRinging = false; setState(ST_IDLE); Serial.println("[TEST] fake call ended"); }
+    else hangUp();
+  }
+  else if (lc == "dtmf" && arg.length()) { for (char c : arg) simSend(String("AT+VTS=") + c); }
+
+  else if (lc == "signal") { simSend("AT+CSQ"); simSend("AT+CREG?"); simSend("AT+COPS?"); }
+  else if (lc == "tone") {
+    if (la == "dial") playTone(TONE_DIAL);
+    else if (la == "busy") playTone(TONE_BUSY);
+    else if (la == "nu") playTone(TONE_UNOBTAINABLE);
+    else stopTone();
+  }
+  else if (lc == "vol" && arg.length()) simSend("AT+CLVL=" + String(constrain((int)arg.toInt(), 0, 100)));
+  else if (lc == "mic" && arg.length()) simSend("AT+CMIC=0," + String(constrain((int)arg.toInt(), 0, 15)));
+  else if (lc == "sim") { simEcho = la != "off"; Serial.printf("[TEST] modem traffic %s\n", simEcho ? "shown" : "hidden"); }
+  else if (lc == "simreset") { Serial.println("[TEST] power-cycling SIM900..."); simPowerPulse(); simInit(); printStatus(); }
+
+  else if (lc == "log") {
+    if (callLog.empty()) Serial.println("[LOG] no calls yet");
+    for (auto& e : callLog)
+      Serial.printf("[LOG] %s %-15s %lu s ago\n", e.dir == 'o' ? "OUT   " : e.dir == 'i' ? "IN    " : "MISSED",
+                    e.number.c_str(), (unsigned long)((millis() - e.at) / 1000));
+  }
+  else if (lc == "reboot") { Serial.println("[TEST] rebooting..."); delay(200); ESP.restart(); }
+  else Serial.printf("[TEST] unknown command '%s' - type 'help'\n", line.c_str());
+}
+
+void pollConsole() {
+  static String buf;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\r' || c == '\n') { if (buf.length()) { Serial.printf("> %s\n", buf.c_str()); handleConsole(buf); } buf = ""; }
+    else if (buf.length() < 120) buf += c;
+  }
+}
+
+// ---------------------------------------------------------------------
 //  Arduino entry points
 // ---------------------------------------------------------------------
 void setup() {
@@ -639,12 +799,16 @@ void setup() {
 
   if (offHook) { offHookSinceMs = millis(); setState(ST_OFFHOOK); playTone(TONE_DIAL); }
   Serial.println("=== ready ===");
+  printStatus();
+  Serial.println("Type 'help' for test commands.");
 }
 
 void loop() {
   server.handleClient();
   pollSim();
   pollHook();
+  pollConsole();
+  watchPins();
 
   int d;
   while (xQueueReceive(digitQueue, &d, 0) == pdTRUE) onDigit(d);
