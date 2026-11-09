@@ -2,6 +2,10 @@
 
 Bring an old BT / GPO rotary dial telephone back to life as a fully working mobile phone. An Arduino Uno reads the original rotary dial and hook switch, a SIM900 GSM module makes and receives the calls, and an L293D motor shield rings the phone's original mechanical bell with the proper British ring cadence. Lift the handset and you hear genuine BT dial tone; dial a number and it rings out over the mobile network. The whole thing runs from a 12 V rechargeable battery, so the phone needs no landline at all.
 
+## ESP32-S3 version with web interface
+
+There is also an **ESP32-S3** version in [`ESP32-S3/RotaryPhone`](ESP32-S3/RotaryPhone). It adds a WiFi web page with an animated rotary dial, a green call/answer button and a red hang-up button. It also shows caller ID, signal strength and recent calls. The bell is driven at 12 V through an A4988/DRV8825 stepper driver or an L298N-style H-bridge. See [its README](ESP32-S3/RotaryPhone/README.md) for wiring and setup.
+
 ## Features
 
 | Action | What happens |
